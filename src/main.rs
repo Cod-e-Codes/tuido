@@ -45,6 +45,12 @@ enum Mode {
     Help,
 }
 
+#[derive(Clone)]
+enum Action {
+    Toggle,
+    Delete,
+}
+
 struct AppSnapshot {
     todos: Vec<Todo>,
     selected_index: Option<usize>,
@@ -68,6 +74,9 @@ struct App {
     is_dirty: bool,
     saved_snapshot: Option<Vec<Todo>>,
     is_editing: bool,
+    repeat_count: usize,
+    clipboard: Vec<Todo>,
+    last_action: Option<Action>,
 }
 
 impl App {
@@ -94,6 +103,9 @@ impl App {
             is_dirty: false,
             saved_snapshot: None,
             is_editing: false,
+            repeat_count: 0,
+            clipboard: Vec::new(),
+            last_action: None,
         }
     }
 
@@ -393,6 +405,9 @@ impl App {
             format!("{} todos toggled", count)
         };
 
+        // Track last action for repeat
+        self.last_action = Some(Action::Toggle);
+
         if self.mode == Mode::Visual {
             self.mode = Mode::Normal;
             self.visual_start = None;
@@ -404,6 +419,13 @@ impl App {
         if indices.is_empty() {
             return;
         }
+
+        // Copy selected todos to clipboard before deleting
+        self.clipboard = indices
+            .iter()
+            .filter_map(|&idx| self.filtered_todos.get(idx))
+            .filter_map(|&i| self.todos.get(i).cloned())
+            .collect();
 
         self.save_snapshot();
 
@@ -460,6 +482,9 @@ impl App {
         } else {
             format!("{} todos deleted", indices.len())
         };
+
+        // Track last action for repeat
+        self.last_action = Some(Action::Delete);
 
         if self.mode == Mode::Visual {
             self.mode = Mode::Normal;
@@ -588,6 +613,56 @@ impl App {
         self.input.clear();
         self.is_editing = false;
     }
+
+    fn yank_todo(&mut self) {
+        let indices = self.get_selected_indices();
+        if indices.is_empty() {
+            return;
+        }
+
+        // Copy selected todos to clipboard
+        self.clipboard = indices
+            .iter()
+            .filter_map(|&idx| self.filtered_todos.get(idx))
+            .filter_map(|&i| self.todos.get(i).cloned())
+            .collect();
+
+        self.message = if indices.len() == 1 {
+            "TODO yanked".to_string()
+        } else {
+            format!("{} todos yanked", indices.len())
+        };
+
+        if self.mode == Mode::Visual {
+            self.mode = Mode::Normal;
+            self.visual_start = None;
+        }
+    }
+
+    fn paste_todo(&mut self) {
+        if self.clipboard.is_empty() {
+            self.message = "Nothing to paste".to_string();
+            return;
+        }
+
+        self.save_snapshot();
+
+        // Determine insertion point
+        let insert_pos = self
+            .list_state
+            .selected()
+            .and_then(|i| self.filtered_todos.get(i))
+            .map(|&i| i + 1)
+            .unwrap_or(self.todos.len());
+
+        // Insert todos in reverse order to maintain correct positions
+        for todo in self.clipboard.iter().rev() {
+            self.todos.insert(insert_pos, todo.clone());
+        }
+
+        self.filter_todos();
+        self.message = format!("Pasted {} todos", self.clipboard.len());
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -632,6 +707,9 @@ fn run_app<B: ratatui::backend::Backend>(
 
             match app.mode {
                 Mode::Normal => match key.code {
+                    KeyCode::Char(c @ '1'..='9') => {
+                        app.repeat_count = app.repeat_count * 10 + (c as usize - '0' as usize);
+                    }
                     KeyCode::Char('q') => {
                         if app.is_dirty {
                             app.message = "Error: unsaved changes. Use :q! to quit without saving"
@@ -640,8 +718,20 @@ fn run_app<B: ratatui::backend::Backend>(
                             return Ok(());
                         }
                     }
-                    KeyCode::Char('j') => app.next(),
-                    KeyCode::Char('k') => app.previous(),
+                    KeyCode::Char('j') => {
+                        let count = app.repeat_count.max(1);
+                        for _ in 0..count {
+                            app.next();
+                        }
+                        app.repeat_count = 0;
+                    }
+                    KeyCode::Char('k') => {
+                        let count = app.repeat_count.max(1);
+                        for _ in 0..count {
+                            app.previous();
+                        }
+                        app.repeat_count = 0;
+                    }
                     KeyCode::Char('G') => {
                         if !app.filtered_todos.is_empty() {
                             app.list_state.select(Some(app.filtered_todos.len() - 1));
@@ -650,6 +740,17 @@ fn run_app<B: ratatui::backend::Backend>(
                     KeyCode::Char('g') => {
                         if last_key == 'g' && !app.filtered_todos.is_empty() {
                             app.list_state.select(Some(0));
+                        }
+                    }
+                    KeyCode::Char('0') => {
+                        // Only jump when not building a number (e.g., "10j")
+                        if app.repeat_count == 0 && !app.filtered_todos.is_empty() {
+                            app.list_state.select(Some(0));
+                        }
+                    }
+                    KeyCode::Char('$') => {
+                        if !app.filtered_todos.is_empty() {
+                            app.list_state.select(Some(app.filtered_todos.len() - 1));
                         }
                     }
                     KeyCode::Char('x') => app.toggle_todo(),
@@ -663,20 +764,37 @@ fn run_app<B: ratatui::backend::Backend>(
                         app.input.clear();
                         app.message.clear();
                         app.is_editing = false;
+                        app.repeat_count = 0;
+                    }
+                    KeyCode::Char('A') => {
+                        app.mode = Mode::Insert;
+                        app.input.clear();
+                        app.message.clear();
+                        app.is_editing = false;
+                        app.repeat_count = 0;
                     }
                     KeyCode::Char('e') => app.edit_todo(),
                     KeyCode::Char(':') => {
                         app.mode = Mode::Command;
                         app.command_input.clear();
+                        app.repeat_count = 0;
                     }
                     KeyCode::Char('v') => {
                         // Sync visual_start with current selection to avoid stale indices
                         app.visual_start = app.list_state.selected();
                         app.mode = Mode::Visual;
+                        app.repeat_count = 0;
+                    }
+                    KeyCode::Char('y') => {
+                        app.yank_todo();
+                    }
+                    KeyCode::Char('p') => {
+                        app.paste_todo();
                     }
                     KeyCode::Char('/') => {
                         app.mode = Mode::Search;
                         app.search_query.clear();
+                        app.repeat_count = 0;
                     }
                     KeyCode::Char('o') => app.open_note_editor(),
                     KeyCode::Char('u') => app.undo(),
@@ -684,6 +802,14 @@ fn run_app<B: ratatui::backend::Backend>(
                         app.redo()
                     }
                     KeyCode::Char('?') => app.show_help(),
+                    KeyCode::Char('.') => {
+                        if let Some(action) = app.last_action.clone() {
+                            match action {
+                                Action::Toggle => app.toggle_todo(),
+                                Action::Delete => app.delete_todo(),
+                            }
+                        }
+                    }
                     KeyCode::Down => app.next(),
                     KeyCode::Up => app.previous(),
                     _ => {}
@@ -891,6 +1017,7 @@ fn run_app<B: ratatui::backend::Backend>(
                     KeyCode::Char('k') => app.previous(),
                     KeyCode::Char('x') => app.toggle_todo(),
                     KeyCode::Char('d') => app.delete_todo(),
+                    KeyCode::Char('y') => app.yank_todo(),
                     KeyCode::Down => app.next(),
                     KeyCode::Up => app.previous(),
                     _ => {}
@@ -1159,13 +1286,21 @@ fn render_help_popup(f: &mut Frame, app: &mut App) {
         "  j / k          Move up/down",
         "  gg             Go to first todo",
         "  G              Go to last todo",
+        "  0 / $          Jump to first/last",
+        "  3j / 5k        Repeat motion N times",
         "",
         "Editing:",
         "  i              Insert new todo",
+        "  A              Append new todo",
         "  e              Edit selected todo",
         "  x              Toggle completion",
         "  dd             Delete todo",
         "  o              Open note editor",
+        "",
+        "Yank/Paste:",
+        "  y              Yank (copy) todo(s)",
+        "  p              Paste below current",
+        "  .              Repeat last action",
         "",
         "Undo/Redo:",
         "  u              Undo",

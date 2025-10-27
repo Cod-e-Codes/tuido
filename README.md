@@ -33,24 +33,35 @@ Data is automatically saved to `~/.tuido.json`. The application loads existing t
 ## Keybindings
 
 ### Navigation
-- `j` / `k` - Move up/down
+- `j` / `k` / `↑` / `↓` - Move up/down
 - `gg` - Go to first todo
-- `G` - Go to last todo
-- `↑` / `↓` - Arrow key navigation
+- `G` - Go to last todo  
+- `0` / `$` - Jump to first/last
+- `3j` / `5k` - Repeat motion N times (any number 1-9)
 
 ### Editing
 - `i` - Insert new todo
+- `A` - Append new todo (same as `i`)
 - `e` - Edit selected todo
 - `x` - Toggle completion
 - `dd` - Delete todo
 - `o` - Open note editor
 - `Esc` - Exit current mode
 
+### Yank/Paste
+- `y` - Yank (copy) current or selected todo(s)
+- `p` - Paste below current position
+- `.` - Repeat last action (toggle/delete)
+
+Copy and paste todos within the application. Deleted todos are automatically copied to the clipboard for easy recovery with `p`.
+
 ### Visual Mode
 - `v` - Enter visual mode
 - `j` / `k` - Extend selection
 - `x` - Toggle selected todos
 - `d` - Delete selected todos
+- `y` - Yank (copy) selected todos
+- `Esc` - Exit visual mode
 
 ### Search
 - `/` - Start search
